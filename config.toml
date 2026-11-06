@@ -1,0 +1,27 @@
+[plugin]
+enabled = true
+config_version = "1.0.0"
+
+[life]
+enabled = true
+owner_ids = []
+bot_uin = ""
+adapter_id = "maibot-team.snowluma-adapter"
+source_groups = []
+mode = "draft"
+album_id = ""
+auto_collect = true
+auto_post = true
+auto_profile = false
+poll_seconds = 120
+decision_min_minutes = 120
+decision_max_minutes = 300
+quiet_start = 0
+quiet_end = 9
+daily_post_limit = 2
+post_gap_minutes = 180
+daily_upload_limit = 10
+profile_gap_hours = 168
+max_collection = 500
+max_image_mb = 8
+model_task = "utils"
