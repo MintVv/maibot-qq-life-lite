@@ -97,6 +97,30 @@ def test_post_draft_does_not_publish(tmp_path):
     p.store.close()
 
 
+def test_group_proposal_never_executes_profile_or_post_in_auto_mode(tmp_path):
+    p = plugin(tmp_path)
+    p.store.set('mode', 'auto')
+    async def scenario():
+        post = await p.tool_propose(stream_id='group-session', user_id='123', kind='post', text='群里不应直接发')
+        nickname = await p.tool_propose(stream_id='group-session', user_id='123', kind='nickname', nickname='不应直接改')
+        assert post[0] and nickname[0]
+        assert json.loads(post[1])['state'] == 'draft'
+        assert json.loads(nickname[1])['state'] == 'draft'
+        assert p.ctx.api.call.await_count == 0
+        assert len(p.store.jobs('draft')) == 2
+        assert all(job['state'] == 'draft' for job in p.store.jobs('draft'))
+    run(scenario())
+    p.store.close()
+
+
+def test_post_rejects_private_image_even_when_id_exists(tmp_path):
+    p = plugin(tmp_path)
+    private = p.store.add_image(png(), 'private-session', 'secret', 'private', 100)
+    with pytest.raises(ValueError, match='获准群'):
+        run(p.propose('post', {'text': 'no leak', 'image_ids': [private['id']]}))
+    p.store.close()
+
+
 def test_unknown_submission_is_never_repeated(tmp_path):
     p = plugin(tmp_path)
     p.verify_account = AsyncMock()

@@ -145,6 +145,25 @@ class QQLifePlugin(MaiBotPlugin):
             raise ValueError('不从其他人的私聊读取素材')
         return stream
 
+    async def public_session_ids(self):
+        streams = await self.ctx.chat.get_all_streams()
+        if not isinstance(streams, list):
+            return set()
+        return {
+            str(stream.get('session_id'))
+            for stream in streams
+            if str(stream.get('group_id') or '') in self.cfg.source_groups
+            and str(stream.get('account_id') or '') == self.cfg.bot_uin
+            and stream.get('platform') == 'qq'
+        }
+
+    async def validate_public_images(self, image_ids):
+        public_sessions = await self.public_session_ids()
+        for image_id in image_ids:
+            image = self.store.image(image_id)
+            if not image or image['source_chat'] not in public_sessions:
+                raise ValueError('公开说说只能使用获准群中的收藏图片')
+
     async def collect(self, chat_id, msg_id, reason, index=0):
         await self.allowed_session(chat_id)
         encoded, source_id = await fetch_image(self.ctx, chat_id, msg_id, index)
@@ -171,7 +190,7 @@ class QQLifePlugin(MaiBotPlugin):
             raise ValueError('图片路径超出收藏目录')
         return path.read_bytes()
 
-    async def propose(self, kind, payload):
+    async def propose(self, kind, payload, *, trusted_scheduler=False):
         if kind == 'post':
             text = str(payload.get('text') or '').strip()
             if not 1 <= len(text) <= 500:
@@ -179,9 +198,11 @@ class QQLifePlugin(MaiBotPlugin):
             ids = payload.get('image_ids') or []
             if not isinstance(ids, list) or len(ids) > 3:
                 raise ValueError('最多配三张已收藏图片')
+            public_sessions = await self.public_session_ids()
             for image_id in ids:
-                if not self.store.image(image_id):
-                    raise ValueError('配图必须来自已收藏图片')
+                image = self.store.image(image_id)
+                if not image or image['source_chat'] not in public_sessions:
+                    raise ValueError('公开说说只能使用获准群中的收藏图片')
             payload = {'text': text, 'image_ids': ids}
         elif kind == 'nickname':
             nickname = str(payload.get('nickname') or '').strip()
@@ -195,7 +216,9 @@ class QQLifePlugin(MaiBotPlugin):
         else:
             raise ValueError('不支持的提议类型')
         job = self.store.queue(kind, payload)
-        if self.mode() == 'auto' and (kind == 'post' or self.cfg.auto_profile) and job['state'] == 'draft':
+        if kind in ('avatar', 'nickname') and job['state'] == 'draft' and not trusted_scheduler:
+            return job
+        if self.mode() == 'auto' and trusted_scheduler and (kind == 'post' or (kind in ('avatar', 'nickname') and self.cfg.auto_profile)) and job['state'] == 'draft':
             return await self.execute(job['id'])
         return job
 
@@ -212,6 +235,7 @@ class QQLifePlugin(MaiBotPlugin):
             payload = job['payload']
             blobs = []
             if job['kind'] == 'post':
+                await self.validate_public_images(payload['image_ids'])
                 blobs = [self.image_bytes(i) for i in payload['image_ids']]
             elif job['kind'] in ('album', 'avatar'):
                 blobs = [self.image_bytes(payload['image_id'])]
@@ -336,7 +360,11 @@ class QQLifePlugin(MaiBotPlugin):
                     image = self.store.image(image_id)
                     if not image or image['source_chat'] != sid:
                         raise ValueError('不能在本群调用其他会话的收藏图片')
-            result = await self.propose(str(kwargs.get('kind') or ''), kwargs)
+            trusted_scheduler = (
+                not stream.get('group_id')
+                and str(kwargs.get('user_id') or '') in self.cfg.owner_ids
+            )
+            result = await self.propose(str(kwargs.get('kind') or ''), kwargs, trusted_scheduler=trusted_scheduler)
             return True, json.dumps(result, ensure_ascii=False)
         except (ValueError, RemoteFailure) as exc:
             return False, str(exc)
@@ -515,7 +543,7 @@ class QQLifePlugin(MaiBotPlugin):
         if any(image_id not in {image['id'] for image in images} for image_id in selected_ids):
             return
         if (kind == 'post' and self.cfg.auto_post) or (kind in ('nickname', 'avatar') and self.cfg.auto_profile):
-            await self.propose(kind, decision)
+            await self.propose(kind, decision, trusted_scheduler=True)
 
     async def loop(self):
         try:
